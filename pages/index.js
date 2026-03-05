@@ -52,6 +52,71 @@ function rowToPayload(row, mapping, config) {
   return payload;
 }
 
+// ─── VCF Parser ───────────────────────────────────────────────────────────────
+function decodeQP(str) {
+  const s = str.replace(/=\r?\n/g, "").replace(/=\n/g, "");
+  const bytes = [];
+  let i = 0;
+  while (i < s.length) {
+    if (s[i] === "=" && i + 2 < s.length) {
+      bytes.push(parseInt(s.slice(i + 1, i + 3), 16));
+      i += 3;
+    } else { bytes.push(s.charCodeAt(i)); i++; }
+  }
+  try { return new TextDecoder("utf-8").decode(new Uint8Array(bytes)); }
+  catch { return String.fromCharCode(...bytes); }
+}
+
+function parseVCF(text) {
+  const unfolded = text.replace(/\r\n[ \t]/g, "").replace(/\n[ \t]/g, "");
+  const contacts = [];
+  const blocks = unfolded.split(/BEGIN:VCARD/i).slice(1);
+  for (const block of blocks) {
+    const endIdx = block.search(/END:VCARD/i);
+    const body = endIdx >= 0 ? block.slice(0, endIdx) : block;
+    const lines = body.split(/\r?\n/).filter(l => l.trim());
+    const contact = {};
+    const phones = [];
+    for (const line of lines) {
+      const colonIdx = line.indexOf(":");
+      if (colonIdx < 0) continue;
+      const propFull = line.slice(0, colonIdx);
+      let value = line.slice(colonIdx + 1);
+      if (/ENCODING=QUOTED-PRINTABLE/i.test(propFull)) value = decodeQP(value);
+      const propName = propFull.split(";")[0].toUpperCase();
+      const params   = propFull.toUpperCase();
+      if (propName === "FN") {
+        contact.name = value.trim();
+      } else if (propName === "N" && !contact.name) {
+        const parts = value.split(";");
+        const full = [parts[1], parts[0]].map(s => (s || "").trim()).filter(Boolean).join(" ");
+        if (full) contact.name = full;
+      } else if (propName === "TEL") {
+        const digits = value.replace(/\D/g, "");
+        if (digits) phones.push({ digits, isCell: /CELL|MOBILE/i.test(params) });
+      } else if (propName === "EMAIL" && !contact.email) {
+        contact.email = value.trim();
+      } else if (propName === "ADR") {
+        const p = value.split(";");
+        if (p[2]?.trim()) contact.address    = p[2].trim();
+        if (p[3]?.trim()) contact.city       = p[3].trim();
+        if (p[4]?.trim()) contact.state      = p[4].trim();
+        if (p[5]?.trim()) contact.postalCode = p[5].trim();
+        if (p[6]?.trim()) contact.country    = p[6].trim();
+      } else if (propName === "ORG" && !contact.free1) {
+        contact.free1 = value.split(";")[0].trim();
+      } else if (propName === "NOTE" && !contact.free2) {
+        contact.free2 = value.trim();
+      }
+    }
+    if (phones.length) {
+      contact.number = (phones.find(p => p.isCell) || phones[0]).digits;
+    }
+    if (contact.name || contact.number || contact.email) contacts.push(contact);
+  }
+  return contacts;
+}
+
 // ─── AI Column Mapping ────────────────────────────────────────────────────────
 async function aiMapColumns(headers, sampleRows, geminiApiKey) {
   const sample = sampleRows.slice(0, 3);
@@ -207,22 +272,43 @@ export default function Home() {
   const [importing, setImporting] = useState(false);
   const [progress, setProgress]   = useState(0);
   const [showAll, setShowAll]     = useState(false);
+  const [fileType, setFileType]   = useState("");
   const fileRef  = useRef();
   const abortRef = useRef(false);
 
   const handleFile = (file) => {
     if (!file) return;
     setFileName(file.name);
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const wb   = XLSX.read(e.target.result, { type:"array" });
-      const ws   = wb.Sheets[wb.SheetNames[0]];
-      const data = XLSX.utils.sheet_to_json(ws, { defval:"" });
-      if (!data.length) return;
-      setHeaders(Object.keys(data[0]));
-      setRows(data);
-    };
-    reader.readAsArrayBuffer(file);
+    const ext = file.name.split(".").pop().toLowerCase();
+    if (ext === "vcf") {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const contacts = parseVCF(e.target.result);
+        if (!contacts.length) return;
+        const usedKeys = ALL_KEYS.filter(k => contacts.some(c => c[k] !== undefined && c[k] !== ""));
+        const m = {};
+        usedKeys.forEach(k => { m[k] = k; });
+        setHeaders(usedKeys);
+        setRows(contacts);
+        setFileType("vcf");
+        setMapping(m);
+        setUnrecognized([]);
+        setIgnoredCols({});
+      };
+      reader.readAsText(file, "utf-8");
+    } else {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const wb   = XLSX.read(e.target.result, { type:"array" });
+        const ws   = wb.Sheets[wb.SheetNames[0]];
+        const data = XLSX.utils.sheet_to_json(ws, { defval:"" });
+        if (!data.length) return;
+        setHeaders(Object.keys(data[0]));
+        setRows(data);
+        setFileType("spreadsheet");
+      };
+      reader.readAsArrayBuffer(file);
+    }
   };
 
   const onDrop = useCallback((e) => {
@@ -412,8 +498,8 @@ export default function Home() {
           {step === 1 && (
             <div className="anim">
               <div style={s.card}>
-                <div style={s.cardTitle}>Upload da Planilha</div>
-                <div style={s.cardDesc}>Envie qualquer planilha — a IA mapeia os campos automaticamente.</div>
+                <div style={s.cardTitle}>Upload de Contatos</div>
+                <div style={s.cardDesc}>Planilhas (.xlsx/.csv) usam mapeamento por IA · Arquivos .vcf são importados diretamente.</div>
 
                 <div style={{ ...s.drop,
                   borderColor: dragging ? C.accent : fileName ? C.green : C.border,
@@ -424,21 +510,27 @@ export default function Home() {
                   onDrop={onDrop}
                   onClick={() => fileRef.current.click()}
                 >
-                  <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv"
+                  <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv,.vcf"
                     style={{ display:"none" }} onChange={e => handleFile(e.target.files[0])} />
                   <div style={{ fontSize:32, marginBottom:10 }}>{fileName ? "✅" : "📂"}</div>
                   {fileName ? (
                     <>
                       <div style={{ color:C.green, fontWeight:600, fontSize:13, marginBottom:4 }}>{fileName}</div>
-                      <div style={{ color:C.sub, fontSize:11 }}>{rows.length} linhas · {headers.length} colunas · clique para trocar</div>
+                      {fileType === "vcf"
+                        ? <div style={{ color:C.sub, fontSize:11 }}>{rows.length} contatos · mapeamento automático · clique para trocar</div>
+                        : <div style={{ color:C.sub, fontSize:11 }}>{rows.length} linhas · {headers.length} colunas · clique para trocar</div>
+                      }
                       <div style={{ marginTop:12, display:"flex", flexWrap:"wrap", gap:5, justifyContent:"center" }}>
-                        {headers.map(h => <span key={h} style={{ ...s.tag, background:C.accentDim, color:C.accent }}>{h}</span>)}
+                        {headers.map(h => {
+                          const lbl = fileType === "vcf" ? (API_FIELDS.find(f => f.key === h)?.label || h) : h;
+                          return <span key={h} style={{ ...s.tag, background: fileType==="vcf" ? C.greenDim : C.accentDim, color: fileType==="vcf" ? C.green : C.accent }}>{lbl}</span>;
+                        })}
                       </div>
                     </>
                   ) : (
                     <>
                       <div style={{ color:C.sub, fontSize:13 }}>Arraste ou clique para selecionar</div>
-                      <div style={{ color:C.muted, fontSize:11, marginTop:5 }}>.xlsx · .xls · .csv</div>
+                      <div style={{ color:C.muted, fontSize:11, marginTop:5 }}>.xlsx · .xls · .csv · .vcf</div>
                     </>
                   )}
                 </div>
@@ -448,22 +540,31 @@ export default function Home() {
                 <div style={s.btnRow}>
                   <button className="hovbtn" style={{ ...s.btn, background:C.surface, color:C.sub, border:`1px solid ${C.border}` }}
                     onClick={() => setStep(0)}>← Voltar</button>
-                  <button className="hovbtn"
-                    style={{ ...s.btn, minWidth:200,
-                      background: aiLoading ? C.purpleDim : `linear-gradient(135deg,${C.accent},${C.purple})`,
-                      color: aiLoading ? C.purple : "#fff",
-                      border: aiLoading ? `1px solid rgba(168,85,247,0.3)` : "none",
-                      opacity: (!rows.length || aiLoading) ? 0.6 : 1,
-                      cursor: (!rows.length || aiLoading) ? "not-allowed" : "pointer",
-                    }}
-                    disabled={!rows.length || aiLoading} onClick={runAiMapping}>
-                    {aiLoading
-                      ? <span style={{ display:"flex", alignItems:"center", gap:8, justifyContent:"center" }}>
-                          <span style={{ display:"inline-block", animation:"spin 1s linear infinite" }}>◌</span>
-                          IA analisando...
-                        </span>
-                      : "✦ Mapear com IA →"}
-                  </button>
+                  {fileType === "vcf" ? (
+                    <button className="hovbtn"
+                      style={{ ...s.btn, minWidth:200, background:`linear-gradient(135deg,${C.green},#15803d)`, color:"#fff",
+                        opacity: rows.length ? 1 : 0.35, cursor: rows.length ? "pointer" : "not-allowed" }}
+                      disabled={!rows.length} onClick={() => setStep(3)}>
+                      📇 Revisar {rows.length} Contatos →
+                    </button>
+                  ) : (
+                    <button className="hovbtn"
+                      style={{ ...s.btn, minWidth:200,
+                        background: aiLoading ? C.purpleDim : `linear-gradient(135deg,${C.accent},${C.purple})`,
+                        color: aiLoading ? C.purple : "#fff",
+                        border: aiLoading ? `1px solid rgba(168,85,247,0.3)` : "none",
+                        opacity: (!rows.length || aiLoading) ? 0.6 : 1,
+                        cursor: (!rows.length || aiLoading) ? "not-allowed" : "pointer",
+                      }}
+                      disabled={!rows.length || aiLoading} onClick={runAiMapping}>
+                      {aiLoading
+                        ? <span style={{ display:"flex", alignItems:"center", gap:8, justifyContent:"center" }}>
+                            <span style={{ display:"inline-block", animation:"spin 1s linear infinite" }}>◌</span>
+                            IA analisando...
+                          </span>
+                        : "✦ Mapear com IA →"}
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -662,7 +763,7 @@ export default function Home() {
                 {!importing && progress === 100 && (
                   <div style={s.btnRow}>
                     <button className="hovbtn" style={{ ...s.btn, background:C.surface, color:C.sub, border:`1px solid ${C.border}` }}
-                      onClick={() => { setStep(0); setRows([]); setHeaders([]); setMapping({}); setFileName(""); setResults([]); setProgress(0); setOperation(""); setUnrecognized([]); setIgnoredCols({}); }}>
+                      onClick={() => { setStep(0); setRows([]); setHeaders([]); setMapping({}); setFileName(""); setResults([]); setProgress(0); setOperation(""); setUnrecognized([]); setIgnoredCols({}); setFileType(""); }}>
                       ← Nova Importação
                     </button>
                     {errorCount > 0 && (
