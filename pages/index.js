@@ -408,19 +408,21 @@ export default function Home() {
           }
         }
 
-        let msg;
+        let action, msg;
         if (foundContact) {
           // 3a. Contato encontrado → editContact com ID encontrado
           const { id: _drop, ...rest } = payload;
           await callEvotalks({ ...rest, id: foundContact.id }, config.baseUrl, "edit");
-          msg = `Atualizado — ID: ${foundContact.id}`;
+          action = "updated";
+          msg = `ID: ${foundContact.id}`;
         } else {
           // 3b. Não encontrado → addContact
           const res = await callEvotalks(payload, config.baseUrl, "add");
-          msg = res?.message || `Criado — ID: ${res?.contactId ?? ""}`;
+          action = "added";
+          msg = res?.contactId ? `ID: ${res.contactId}` : (res?.message || "");
         }
 
-        setResults(prev => prev.map(r => r.i === i ? { ...r, status:"success", msg } : r));
+        setResults(prev => prev.map(r => r.i === i ? { ...r, status:"success", action, msg } : r));
       } catch (err) {
         setResults(prev => prev.map(r => r.i === i ? { ...r, status:"error", msg: err.message } : r));
       }
@@ -431,7 +433,9 @@ export default function Home() {
     setImporting(false);
   };
 
-  const successCount = results.filter(r => r.status === "success").length;
+  const addedCount   = results.filter(r => r.status === "success" && r.action === "added").length;
+  const updatedCount = results.filter(r => r.status === "success" && r.action === "updated").length;
+  const successCount = addedCount + updatedCount;
   const errorCount   = results.filter(r => r.status === "error").length;
   const pendingCount = results.filter(r => r.status === "pending" || r.status === "sending").length;
   const canConfig    = config.apiKey && config.queueId && config.baseUrl && config.geminiKey && operation;
@@ -747,7 +751,7 @@ export default function Home() {
           {step === 4 && (
             <div className="anim">
               <div style={{ display:"flex", gap:12, marginBottom:18 }}>
-                {[[successCount,C.green,"Sucesso"],[errorCount,C.red,"Erro"],[pendingCount,C.amber,"Pendente"],[rows.length,C.sub,"Total"]].map(([n,c,l]) => (
+                {[[addedCount,C.green,"Adicionados"],[updatedCount,C.accent,"Editados"],[errorCount,C.red,"Erros"],[pendingCount,C.amber,"Pendente"],[rows.length,C.sub,"Total"]].map(([n,c,l]) => (
                   <div key={l} style={s.stat}>
                     <div style={{ ...s.statN, color:c }}>{n}</div>
                     <div style={s.statL}>{l}</div>
@@ -778,28 +782,33 @@ export default function Home() {
                     <thead>
                       <tr>
                         <th style={s.th}>#</th>
-                        {operation==="edit" && <th style={s.th}>ID</th>}
                         <th style={s.th}>Nome</th>
                         <th style={s.th}>Número</th>
-                        <th style={s.th}>Status</th>
-                        <th style={s.th}>Resposta</th>
+                        <th style={s.th}>Ação</th>
+                        <th style={s.th}>Detalhe</th>
                       </tr>
                     </thead>
                     <tbody>
                       {results.map(r => {
                         const row = rows[r.i];
-                        const sc  = { pending:[C.muted,"·"], sending:[C.amber,"⟳"], success:[C.green,"✓"], error:[C.red,"✗"] };
-                        const [col, icon] = sc[r.status];
+                        const statusMap = {
+                          pending:  { col:C.muted,  icon:"·",  label:"AGUARDANDO" },
+                          sending:  { col:C.amber,  icon:"⟳",  label:"BUSCANDO..."  },
+                          error:    { col:C.red,    icon:"✗",  label:"ERRO"        },
+                          success:  r.action === "updated"
+                            ? { col:C.accent, icon:"✎", label:"EDITADO"     }
+                            : { col:C.green,  icon:"✦", label:"ADICIONADO"  },
+                        };
+                        const { col, icon, label } = statusMap[r.status] || statusMap.pending;
                         return (
                           <tr key={r.i}>
                             <td style={{ ...s.td, color:C.muted }}>{r.i+1}</td>
-                            {operation==="edit" && <td style={{ ...s.td, color:C.accent, fontWeight:600 }}>{mapping["id"] ? row[mapping["id"]] : "—"}</td>}
                             <td style={s.td}>{mapping["name"] ? row[mapping["name"]] : "—"}</td>
                             <td style={{ ...s.td, color:C.sub }}>{mapping["number"] ? row[mapping["number"]] : "—"}</td>
                             <td style={s.td}>
-                              <span style={{ color:col, fontSize:11, fontWeight:600, display:"inline-block",
+                              <span style={{ color:col, fontSize:11, fontWeight:700, display:"inline-block",
                                 animation: r.status==="sending" ? "spin 1.2s linear infinite" : "none" }}>
-                                {icon} {r.status.toUpperCase()}
+                                {icon} {label}
                               </span>
                             </td>
                             <td style={{ ...s.td, color:r.status==="error"?C.red:C.muted, maxWidth:220 }} title={r.msg}>
