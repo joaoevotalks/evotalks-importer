@@ -383,14 +383,11 @@ export default function Home() {
     return m;
   };
 
-  const startImport = async () => {
+  const runImportFrom = async (fromIndex, finalMapping) => {
     abortRef.current = false;
-    setImporting(true); setProgress(0);
-    setResults(rows.map((_, i) => ({ i, status:"pending", msg:"" })));
-    setStep(4);
-    const finalMapping = buildFinalMapping();
+    setImporting(true);
 
-    for (let i = 0; i < rows.length; i++) {
+    for (let i = fromIndex; i < rows.length; i++) {
       if (abortRef.current) break;
       setResults(prev => prev.map(r => r.i === i ? { ...r, status:"sending" } : r));
       const payload = rowToPayload(rows[i], finalMapping, config);
@@ -431,6 +428,20 @@ export default function Home() {
       await new Promise(r => setTimeout(r, 150));
     }
     setImporting(false);
+  };
+
+  const startImport = () => {
+    setResults(rows.map((_, i) => ({ i, status:"pending", msg:"" })));
+    setProgress(0);
+    setStep(4);
+    runImportFrom(0, buildFinalMapping());
+  };
+
+  const resumeImport = () => {
+    const firstPending = results.findIndex(r => r.status === "pending" || r.status === "sending");
+    if (firstPending < 0) return;
+    setResults(prev => prev.map(r => r.status === "sending" ? { ...r, status:"pending" } : r));
+    runImportFrom(firstPending, buildFinalMapping());
   };
 
   const addedCount   = results.filter(r => r.status === "success" && r.action === "added").length;
@@ -820,6 +831,19 @@ export default function Home() {
                     </tbody>
                   </table>
                 </div>
+
+                {!importing && progress > 0 && progress < 100 && (
+                  <div style={s.btnRow}>
+                    <button className="hovbtn" style={{ ...s.btn, background:C.surface, color:C.sub, border:`1px solid ${C.border}` }}
+                      onClick={() => setStep(3)}>
+                      ← Voltar
+                    </button>
+                    <button className="hovbtn" style={{ ...s.btn, background:`linear-gradient(135deg,${C.green},#15803d)`, color:"#fff" }}
+                      onClick={resumeImport}>
+                      ▶ Retomar Importação ({results.filter(r => r.status === "pending").length} restantes)
+                    </button>
+                  </div>
+                )}
 
                 {!importing && progress === 100 && (
                   <div style={s.btnRow}>
