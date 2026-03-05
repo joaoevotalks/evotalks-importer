@@ -2,6 +2,7 @@ import { useState, useCallback, useRef } from "react";
 import * as XLSX from "xlsx";
 import Head from "next/head";
 
+// ─── API Fields ───────────────────────────────────────────────────────────────
 const API_FIELDS = [
   { key:"id",              label:"ID do Contato",         req_edit:true,  type:"number", desc:"Identificador único do contato no sistema" },
   { key:"name",            label:"Nome",                  req_add:true,   type:"string", desc:"Nome completo do contato" },
@@ -27,6 +28,7 @@ const API_FIELDS = [
 ];
 const ALL_KEYS = API_FIELDS.map(f => f.key);
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 function parseArrayField(val) {
   if (val === undefined || val === null || val === "") return undefined;
   const str = String(val).trim();
@@ -50,7 +52,8 @@ function rowToPayload(row, mapping, config) {
   return payload;
 }
 
-async function aiMapColumns(headers, sampleRows) {
+// ─── AI Column Mapping ────────────────────────────────────────────────────────
+async function aiMapColumns(headers, sampleRows, geminiApiKey) {
   const sample = sampleRows.slice(0, 3);
   const headerSample = headers.map(h => {
     const vals = sample.map(r => r[h]).filter(v => v !== "" && v !== undefined).slice(0, 2);
@@ -59,7 +62,7 @@ async function aiMapColumns(headers, sampleRows) {
 
   const fieldList = API_FIELDS.map(f => `${f.key}: ${f.label} — ${f.desc}`).join("\n");
 
-  const aiPrompt = `Você é especialista em integração de dados. Analise as colunas de uma planilha e mapeie para campos de uma API de contatos.
+  const prompt = `Você é especialista em integração de dados. Analise as colunas de uma planilha e mapeie para campos de uma API de contatos.
 
 CAMPOS DA API:
 ${fieldList}
@@ -80,18 +83,28 @@ Regras:
 - Arrays com colchetes → "tags", "groups" ou "preferredAgents" conforme contexto
 - Em dúvida, prefira null`;
 
-  const res = await fetch("/api/proxy", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ type: "ai", aiPrompt }),
-  });
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiApiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0, maxOutputTokens: 1000 },
+      }),
+    }
+  );
 
-  if (!res.ok) throw new Error(`Erro proxy: ${res.status}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(`Erro API Gemini: ${res.status} — ${err?.error?.message || "verifique sua API Key"}`);
+  }
   const data = await res.json();
-  const text = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("");
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
   return JSON.parse(text.replace(/```json|```/g, "").trim());
 }
 
+// ─── Call Evotalks via Vercel proxy ───────────────────────────────────────────
 async function callEvotalks(payload, baseUrl, operation) {
   const endpoint = operation === "edit" ? "/int/editContact" : "/int/addContact";
   const target   = `${baseUrl.replace(/\/$/, "")}${endpoint}`;
@@ -99,7 +112,7 @@ async function callEvotalks(payload, baseUrl, operation) {
   const res = await fetch("/api/proxy", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ type: "evotalks", target, payload }),
+    body: JSON.stringify({ target, payload }),
   });
 
   const data = await res.json();
@@ -107,6 +120,7 @@ async function callEvotalks(payload, baseUrl, operation) {
   return data;
 }
 
+// ─── Theme ────────────────────────────────────────────────────────────────────
 const C = {
   bg:"#07090f", surface:"#0d1117", card:"#0f1520", border:"#1c2840", borderHi:"#2a3f6e",
   accent:"#3b82f6", accentDim:"rgba(59,130,246,0.1)",
@@ -184,7 +198,7 @@ const STEPS = ["Configurar","Upload","Mapeamento IA","Revisar","Importar"];
 
 export default function Home() {
   const [step, setStep]           = useState(0);
-  const [config, setConfig]       = useState({ apiKey:"", queueId:"", baseUrl:"" });
+  const [config, setConfig]       = useState({ apiKey:"", queueId:"", baseUrl:"", geminiKey:"" });
   const [operation, setOperation] = useState("");
   const [rows, setRows]           = useState([]);
   const [headers, setHeaders]     = useState([]);
@@ -225,7 +239,7 @@ export default function Home() {
   const runAiMapping = async () => {
     setAiLoading(true); setAiError("");
     try {
-      const result = await aiMapColumns(headers, rows);
+      const result = await aiMapColumns(headers, rows, config.geminiKey);
       const newMapping = {};
       for (const [col, field] of Object.entries(result.mapping || {})) {
         if (field && field !== "null" && ALL_KEYS.includes(field)) newMapping[field] = col;
@@ -265,7 +279,7 @@ export default function Home() {
       const payload = rowToPayload(rows[i], finalMapping, config);
 
       if (operation === "edit" && !payload.id) {
-        setResults(prev => prev.map(r => r.i === i ? { ...r, status:"error", msg:"Campo id ausente" } : r));
+        setResults(prev => prev.map(r => r.i === i ? { ...r, status:"error", msg:"Campo 'id' ausente" } : r));
         setProgress(Math.round(((i+1)/rows.length)*100));
         await new Promise(r => setTimeout(r, 20));
         continue;
@@ -288,7 +302,7 @@ export default function Home() {
   const successCount = results.filter(r => r.status === "success").length;
   const errorCount   = results.filter(r => r.status === "error").length;
   const pendingCount = results.filter(r => r.status === "pending" || r.status === "sending").length;
-  const canConfig    = config.apiKey && config.queueId && config.baseUrl && operation;
+  const canConfig    = config.apiKey && config.queueId && config.baseUrl && config.geminiKey && operation;
   const mappedKeys   = Object.keys(mapping);
   const previewCols  = mappedKeys.slice(0, 10);
 
@@ -296,6 +310,7 @@ export default function Home() {
     <>
       <Head>
         <title>Evotalks Smart Importer</title>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;600;700&display=swap" rel="stylesheet" />
         <style>{`
           *{box-sizing:border-box;margin:0;padding:0}
@@ -317,6 +332,7 @@ export default function Home() {
       </Head>
 
       <div style={s.root}>
+        {/* HEADER */}
         <header style={s.header}>
           <div style={{ display:"flex", alignItems:"center" }}>
             <div style={s.logoBadge}>EVO</div>
@@ -347,11 +363,14 @@ export default function Home() {
         </header>
 
         <div style={s.page}>
+
+          {/* STEP 0 */}
           {step === 0 && (
             <div className="anim">
               <div style={s.card}>
                 <div style={s.cardTitle}>Configurações</div>
                 <div style={s.cardDesc}>Escolha a operação e preencha as credenciais do Evotalks.</div>
+
                 <div style={s.opRow}>
                   {[
                     { id:"add",  icon:"✦", title:"Criar Contatos",  desc:"Novos contatos via /addContact", color:C.green, dim:C.greenDim },
@@ -366,6 +385,7 @@ export default function Home() {
                     </div>
                   ))}
                 </div>
+
                 <div style={s.row2}>
                   <F label="URL Base *" hint="Ex: https://app.evotalks.com">
                     <input style={s.inp} placeholder="https://sua-instancia.evotalks.com"
@@ -380,6 +400,11 @@ export default function Home() {
                   <input style={s.inp} placeholder="••••••••••••••••••••" type="password"
                     value={config.apiKey} onChange={e => setConfig({ ...config, apiKey:e.target.value })} />
                 </F>
+                <F label="Gemini API Key *" hint="Chave do Google AI Studio (generativelanguage.googleapis.com)">
+                  <input style={s.inp} placeholder="AIza••••••••••••••••••••••••••••••••••••" type="password"
+                    value={config.geminiKey} onChange={e => setConfig({ ...config, geminiKey:e.target.value })} />
+                </F>
+
                 <button className="hovbtn" style={{ ...s.btn, background:C.accent, color:"#fff",
                   opacity:canConfig?1:0.35, cursor:canConfig?"pointer":"not-allowed" }}
                   disabled={!canConfig} onClick={() => setStep(1)}>
@@ -389,11 +414,13 @@ export default function Home() {
             </div>
           )}
 
+          {/* STEP 1 */}
           {step === 1 && (
             <div className="anim">
               <div style={s.card}>
                 <div style={s.cardTitle}>Upload da Planilha</div>
                 <div style={s.cardDesc}>Envie qualquer planilha — a IA mapeia os campos automaticamente.</div>
+
                 <div style={{ ...s.drop,
                   borderColor: dragging ? C.accent : fileName ? C.green : C.border,
                   background:  dragging ? C.accentDim : fileName ? C.greenDim : "transparent",
@@ -421,7 +448,9 @@ export default function Home() {
                     </>
                   )}
                 </div>
+
                 {aiError && <div style={s.warnBox}>⚠ {aiError}</div>}
+
                 <div style={s.btnRow}>
                   <button className="hovbtn" style={{ ...s.btn, background:C.surface, color:C.sub, border:`1px solid ${C.border}` }}
                     onClick={() => setStep(0)}>← Voltar</button>
@@ -446,6 +475,7 @@ export default function Home() {
             </div>
           )}
 
+          {/* STEP 2 */}
           {step === 2 && (
             <div className="anim">
               <div style={s.card}>
@@ -454,6 +484,7 @@ export default function Home() {
                   <span style={{ color:C.green }}>{mappedKeys.length} coluna{mappedKeys.length!==1?"s":""} mapeada{mappedKeys.length!==1?"s":""}</span>
                   {unrecognized.length > 0 && <span style={{ color:C.amber }}> · {unrecognized.length} não reconhecida{unrecognized.length!==1?"s":""}</span>}
                 </div>
+
                 {mappedKeys.length > 0 && (
                   <div style={{ ...s.mapGrid, marginBottom:20 }}>
                     {API_FIELDS.filter(f => mapping[f.key]).map(field => (
@@ -472,6 +503,7 @@ export default function Home() {
                     ))}
                   </div>
                 )}
+
                 {unrecognized.length > 0 && (
                   <>
                     <div style={s.warnBox}>⚠ Colunas não reconhecidas — escolha o que fazer:</div>
@@ -494,6 +526,7 @@ export default function Home() {
                     </div>
                   </>
                 )}
+
                 <div style={s.btnRow}>
                   <button className="hovbtn" style={{ ...s.btn, background:C.surface, color:C.sub, border:`1px solid ${C.border}` }}
                     onClick={() => setStep(1)}>← Voltar</button>
@@ -504,6 +537,7 @@ export default function Home() {
             </div>
           )}
 
+          {/* STEP 3 */}
           {step === 3 && (
             <div className="anim">
               <div style={s.card}>
@@ -513,9 +547,11 @@ export default function Home() {
                     {operation === "edit" ? "✎ Editar" : "✦ Criar"}
                   </strong> · {rows.length} contatos · {mappedKeys.length} campos mapeados
                 </div>
+
                 {operation === "edit" && !mapping["id"] && (
-                  <div style={s.warnBox}>⚠ Campo id não mapeado! Linhas sem ID serão puladas.</div>
+                  <div style={s.warnBox}>⚠ Campo <strong>id</strong> não mapeado! Linhas sem ID serão puladas.</div>
                 )}
+
                 <div style={{ overflowX:"auto", borderRadius:8, border:`1px solid ${C.border}`, marginBottom:16, maxHeight:320, overflowY:"auto" }}>
                   <table style={s.table}>
                     <thead>
@@ -537,6 +573,7 @@ export default function Home() {
                     </tbody>
                   </table>
                 </div>
+
                 {rows.length > 8 && (
                   <div style={{ textAlign:"center", marginBottom:14 }}>
                     <button className="hovbtn" style={{ ...s.btn, background:C.surface, color:C.sub, border:`1px solid ${C.border}`, fontSize:11, padding:"6px 14px" }}
@@ -545,6 +582,7 @@ export default function Home() {
                     </button>
                   </div>
                 )}
+
                 <div style={s.btnRow}>
                   <button className="hovbtn" style={{ ...s.btn, background:C.surface, color:C.sub, border:`1px solid ${C.border}` }}
                     onClick={() => setStep(2)}>← Ajustar</button>
@@ -558,6 +596,7 @@ export default function Home() {
             </div>
           )}
 
+          {/* STEP 4 */}
           {step === 4 && (
             <div className="anim">
               <div style={{ display:"flex", gap:12, marginBottom:18 }}>
@@ -568,6 +607,7 @@ export default function Home() {
                   </div>
                 ))}
               </div>
+
               <div style={s.card}>
                 <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
                   <div style={s.cardTitle}>
@@ -580,10 +620,12 @@ export default function Home() {
                       onClick={() => { abortRef.current = true; }}>Cancelar</button>
                   )}
                 </div>
+
                 <div style={s.pbar}><div style={{ ...s.pfill, width:`${progress}%` }} /></div>
                 <div style={{ fontSize:10, color:C.muted, marginBottom:16, textAlign:"right" }}>
                   {progress}% — {successCount+errorCount}/{rows.length}
                 </div>
+
                 <div style={{ overflowX:"auto", borderRadius:8, border:`1px solid ${C.border}`, maxHeight:400, overflowY:"auto" }}>
                   <table style={s.table}>
                     <thead>
@@ -622,6 +664,7 @@ export default function Home() {
                     </tbody>
                   </table>
                 </div>
+
                 {!importing && progress === 100 && (
                   <div style={s.btnRow}>
                     <button className="hovbtn" style={{ ...s.btn, background:C.surface, color:C.sub, border:`1px solid ${C.border}` }}
