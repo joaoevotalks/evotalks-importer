@@ -843,26 +843,19 @@ export default function Home() {
                   </table>
                 </div>
 
-                {!importing && progress > 0 && progress < 100 && (
+                {!importing && (
                   <div style={s.btnRow}>
                     <button className="hovbtn" style={{ ...s.btn, background:C.surface, color:C.sub, border:`1px solid ${C.border}` }}
-                      onClick={() => setStep(3)}>
-                      ← Voltar
+                      onClick={() => { if (progress === 100) { setStep(0); setRows([]); setHeaders([]); setMapping({}); setFileName(""); setResults([]); setProgress(0); setOperation(""); setUnrecognized([]); setIgnoredCols({}); setFileType(""); } else { setStep(3); } }}>
+                      {progress === 100 ? "← Nova Importação" : "← Voltar"}
                     </button>
-                    <button className="hovbtn" style={{ ...s.btn, background:`linear-gradient(135deg,${C.green},#15803d)`, color:"#fff" }}
-                      onClick={resumeImport}>
-                      ▶ Retomar Importação ({results.filter(r => r.status === "pending").length} restantes)
-                    </button>
-                  </div>
-                )}
-
-                {!importing && progress === 100 && (
-                  <div style={s.btnRow}>
-                    <button className="hovbtn" style={{ ...s.btn, background:C.surface, color:C.sub, border:`1px solid ${C.border}` }}
-                      onClick={() => { setStep(0); setRows([]); setHeaders([]); setMapping({}); setFileName(""); setResults([]); setProgress(0); setOperation(""); setUnrecognized([]); setIgnoredCols({}); setFileType(""); }}>
-                      ← Nova Importação
-                    </button>
-                    {errorCount > 0 && (
+                    {results.some(r => r.status === "pending") && (
+                      <button className="hovbtn" style={{ ...s.btn, background:`linear-gradient(135deg,${C.green},#15803d)`, color:"#fff" }}
+                        onClick={resumeImport}>
+                        ▶ Retomar Importação ({results.filter(r => r.status === "pending").length} restantes)
+                      </button>
+                    )}
+                    {progress === 100 && errorCount > 0 && (
                       <button className="hovbtn" style={{ ...s.btn, background:C.redDim, color:C.red, border:`1px solid rgba(239,68,68,0.3)` }}
                         onClick={() => {
                           const errs = results.filter(r => r.status === "error");
