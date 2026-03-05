@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import * as XLSX from "xlsx";
 import Head from "next/head";
 
@@ -296,7 +296,12 @@ const STEPS = ["Configurar","Upload","Mapeamento IA","Revisar","Importar"];
 
 export default function Home() {
   const [step, setStep]           = useState(0);
-  const [config, setConfig]       = useState({ apiKey:"", queueId:"", baseUrl:"", geminiKey:"" });
+  const [config, setConfig]       = useState(() => {
+    try {
+      const saved = typeof window !== "undefined" && localStorage.getItem("evotalks_config");
+      return saved ? JSON.parse(saved) : { apiKey:"", queueId:"", baseUrl:"", geminiKey:"" };
+    } catch { return { apiKey:"", queueId:"", baseUrl:"", geminiKey:"" }; }
+  });
   const [operation, setOperation] = useState("");
   const [rows, setRows]           = useState([]);
   const [headers, setHeaders]     = useState([]);
@@ -314,6 +319,10 @@ export default function Home() {
   const [fileType, setFileType]   = useState("");
   const fileRef  = useRef();
   const abortRef = useRef(false);
+
+  useEffect(() => {
+    try { localStorage.setItem("evotalks_config", JSON.stringify(config)); } catch {}
+  }, [config]);
 
   const handleFile = (file) => {
     if (!file) return;
