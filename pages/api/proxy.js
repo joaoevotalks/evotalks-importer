@@ -15,7 +15,8 @@ export default async function handler(req, res) {
   }
   if (type === "evotalks") {
     try {
-      const r = await fetch(target, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      const normalizedTarget = /^https?:\/\//i.test(target) ? target : `https://${target}`;
+      const r = await fetch(normalizedTarget, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       const ct = r.headers.get("content-type") || "";
       if (!ct.includes("application/json")) { const t = await r.text(); return res.status(502).json({ error: `Resposta inválida (${r.status}): ${t.slice(0,200)}` }); }
       return res.status(r.status).json(await r.json());
