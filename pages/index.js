@@ -56,6 +56,7 @@ async function aiMapColumns(headers, sampleRows) {
     const vals = sample.map(r => r[h]).filter(v => v !== "" && v !== undefined).slice(0, 2);
     return `"${h}": [${vals.map(v => JSON.stringify(String(v))).join(", ")}]`;
   }).join("\n");
+
   const fieldList = API_FIELDS.map(f => `${f.key}: ${f.label} — ${f.desc}`).join("\n");
 
   const aiPrompt = `Você é especialista em integração de dados. Analise as colunas de uma planilha e mapeie para campos de uma API de contatos.
@@ -85,7 +86,7 @@ Regras:
     body: JSON.stringify({ type: "ai", aiPrompt }),
   });
 
-  if (!res.ok) throw new Error(`Erro API: ${res.status}`);
+  if (!res.ok) throw new Error(`Erro proxy: ${res.status}`);
   const data = await res.json();
   const text = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("");
   return JSON.parse(text.replace(/```json|```/g, "").trim());
@@ -94,11 +95,13 @@ Regras:
 async function callEvotalks(payload, baseUrl, operation) {
   const endpoint = operation === "edit" ? "/int/editContact" : "/int/addContact";
   const target   = `${baseUrl.replace(/\/$/, "")}${endpoint}`;
+
   const res = await fetch("/api/proxy", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ type: "evotalks", target, payload }),
   });
+
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error || data?.message || `HTTP ${res.status}`);
   return data;
@@ -255,16 +258,19 @@ export default function Home() {
     setResults(rows.map((_, i) => ({ i, status:"pending", msg:"" })));
     setStep(4);
     const finalMapping = buildFinalMapping();
+
     for (let i = 0; i < rows.length; i++) {
       if (abortRef.current) break;
       setResults(prev => prev.map(r => r.i === i ? { ...r, status:"sending" } : r));
       const payload = rowToPayload(rows[i], finalMapping, config);
+
       if (operation === "edit" && !payload.id) {
         setResults(prev => prev.map(r => r.i === i ? { ...r, status:"error", msg:"Campo id ausente" } : r));
         setProgress(Math.round(((i+1)/rows.length)*100));
         await new Promise(r => setTimeout(r, 20));
         continue;
       }
+
       try {
         const res = await callEvotalks(payload, config.baseUrl, operation);
         const msg = res?.message || (operation === "edit" ? "Atualizado" : `Criado — ID: ${res?.contactId ?? ""}`);
@@ -272,6 +278,7 @@ export default function Home() {
       } catch (err) {
         setResults(prev => prev.map(r => r.i === i ? { ...r, status:"error", msg: err.message } : r));
       }
+
       setProgress(Math.round(((i+1)/rows.length)*100));
       await new Promise(r => setTimeout(r, 150));
     }
@@ -308,6 +315,7 @@ export default function Home() {
           ::-webkit-scrollbar-thumb{background:#1c2840;border-radius:2px}
         `}</style>
       </Head>
+
       <div style={s.root}>
         <header style={s.header}>
           <div style={{ display:"flex", alignItems:"center" }}>
