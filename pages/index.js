@@ -91,6 +91,7 @@ Regras:
 
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error || `Erro Gemini: ${res.status}`);
+  if (!data.text || typeof data.text !== "string") throw new Error("Resposta inválida do Gemini: " + JSON.stringify(data));
   return JSON.parse(data.text.replace(/```json|```/g, "").trim());
 }
 
