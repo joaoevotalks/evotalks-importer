@@ -83,7 +83,7 @@ function parseVCF(text) {
       const propFull = line.slice(0, colonIdx);
       let value = line.slice(colonIdx + 1);
       if (/ENCODING=QUOTED-PRINTABLE/i.test(propFull)) value = decodeQP(value);
-      const propName = propFull.split(";")[0].toUpperCase();
+      const propName = propFull.split(";")[0].replace(/^item\d+\./i, "").toUpperCase();
       const params   = propFull.toUpperCase();
       if (propName === "FN") {
         contact.name = value.trim();
