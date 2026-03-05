@@ -300,7 +300,6 @@ export default function Home() {
       return { apiKey:"", queueId:"", baseUrl:"", geminiKey };
     } catch { return { apiKey:"", queueId:"", baseUrl:"", geminiKey:"" }; }
   });
-  const [operation, setOperation] = useState("");
   const [rows, setRows]           = useState([]);
   const [headers, setHeaders]     = useState([]);
   const [fileName, setFileName]   = useState("");
@@ -458,7 +457,7 @@ export default function Home() {
   const successCount = addedCount + updatedCount;
   const errorCount   = results.filter(r => r.status === "error").length;
   const pendingCount = results.filter(r => r.status === "pending" || r.status === "sending").length;
-  const canConfig    = config.apiKey && config.queueId && config.baseUrl && config.geminiKey && operation;
+  const canConfig    = config.apiKey && config.queueId && config.baseUrl && config.geminiKey;
   const mappedKeys   = Object.keys(mapping);
   const previewCols  = mappedKeys.slice(0, 10);
 
@@ -525,22 +524,7 @@ export default function Home() {
             <div className="anim">
               <div style={s.card}>
                 <div style={s.cardTitle}>Configurações</div>
-                <div style={s.cardDesc}>Escolha a operação e preencha as credenciais do Evotalks.</div>
-
-                <div style={s.opRow}>
-                  {[
-                    { id:"add",  icon:"✦", title:"Criar Contatos",  desc:"Novos contatos via /addContact", color:C.green, dim:C.greenDim },
-                    { id:"edit", icon:"✎", title:"Editar Contatos", desc:"Atualiza existentes via /editContact — exige campo id", color:C.accent, dim:C.accentDim },
-                  ].map(op => (
-                    <div key={op.id} className="hovbtn"
-                      style={{ ...s.opCard, borderColor: operation===op.id ? op.color : C.border, background: operation===op.id ? op.dim : C.surface }}
-                      onClick={() => setOperation(op.id)}>
-                      <div style={{ fontSize:18, marginBottom:6 }}>{op.icon}</div>
-                      <div style={{ fontSize:13, fontWeight:700, color: operation===op.id ? op.color : C.text, marginBottom:4 }}>{op.title}</div>
-                      <div style={{ fontSize:11, color:C.sub, lineHeight:1.5 }}>{op.desc}</div>
-                    </div>
-                  ))}
-                </div>
+                <div style={s.cardDesc}>Preencha as credenciais do Evotalks. A importação busca automaticamente o contato e decide se cria ou edita.</div>
 
                 <div style={s.row2}>
                   <F label="URL Base *" hint="Ex: https://app.evotalks.com">
@@ -714,14 +698,8 @@ export default function Home() {
               <div style={s.card}>
                 <div style={s.cardTitle}>Revisão Final</div>
                 <div style={s.cardDesc}>
-                  <strong style={{ color: operation==="edit" ? C.accent : C.green }}>
-                    {operation === "edit" ? "✎ Editar" : "✦ Criar"}
-                  </strong> · {rows.length} contatos · {mappedKeys.length} campos mapeados
+                  {rows.length} contatos · {mappedKeys.length} campos mapeados
                 </div>
-
-                {operation === "edit" && !mapping["id"] && (
-                  <div style={s.warnBox}>⚠ Campo <strong>id</strong> não mapeado! Linhas sem ID serão puladas.</div>
-                )}
 
                 <div style={{ overflowX:"auto", borderRadius:8, border:`1px solid ${C.border}`, marginBottom:16, maxHeight:320, overflowY:"auto" }}>
                   <table style={s.table}>
@@ -758,9 +736,9 @@ export default function Home() {
                   <button className="hovbtn" style={{ ...s.btn, background:C.surface, color:C.sub, border:`1px solid ${C.border}` }}
                     onClick={() => setStep(2)}>← Ajustar</button>
                   <button className="hovbtn" style={{ ...s.btn, color:"#fff",
-                    background: operation==="edit" ? `linear-gradient(135deg,${C.accent},#1d4ed8)` : `linear-gradient(135deg,${C.green},#15803d)` }}
+                    background:`linear-gradient(135deg,${C.green},#15803d)` }}
                     onClick={startImport}>
-                    {operation === "edit" ? "✎ Iniciar Edição" : "✦ Iniciar Criação"}
+                    ✦ Iniciar Importação
                   </button>
                 </div>
               </div>
@@ -783,7 +761,7 @@ export default function Home() {
                 <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
                   <div style={s.cardTitle}>
                     {importing
-                      ? <span style={{ animation:"pulse 1.5s infinite" }}>{operation==="edit"?"✎":"✦"} Importando...</span>
+                      ? <span style={{ animation:"pulse 1.5s infinite" }}>✦ Importando...</span>
                       : progress === 100 ? "✅ Concluído" : "Log"}
                   </div>
                   {importing && (
@@ -844,7 +822,7 @@ export default function Home() {
                 {!importing && (
                   <div style={s.btnRow}>
                     <button className="hovbtn" style={{ ...s.btn, background:C.surface, color:C.sub, border:`1px solid ${C.border}` }}
-                      onClick={() => { if (progress === 100) { setStep(0); setRows([]); setHeaders([]); setMapping({}); setFileName(""); setResults([]); setProgress(0); setOperation(""); setUnrecognized([]); setIgnoredCols({}); setFileType(""); } else { setStep(3); } }}>
+                      onClick={() => { if (progress === 100) { setStep(0); setRows([]); setHeaders([]); setMapping({}); setFileName(""); setResults([]); setProgress(0); setUnrecognized([]); setIgnoredCols({}); setFileType(""); } else { setStep(3); } }}>
                       {progress === 100 ? "← Nova Importação" : "← Voltar"}
                     </button>
                     {results.some(r => r.status === "pending") && (
