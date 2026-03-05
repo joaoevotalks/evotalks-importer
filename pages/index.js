@@ -211,8 +211,10 @@ async function searchEvotalks(baseUrl, config, searchValue) {
       payload: { queueId: Number(config.queueId) || 0, apiKey: config.apiKey, searchField: "number", searchValue },
     }),
   });
-  if (!res.ok) return null;
   const data = await res.json();
+  if (res.status === 401) throw new Error(`Autenticação inválida (401): verifique API Key e Queue ID`);
+  if (res.status === 503) throw new Error(`Fila indisponível (503): verifique o Queue ID`);
+  if (!res.ok) return null; // 404 = não encontrado, outros erros → prossegue com add
   return data?.id ? data : null;
 }
 
