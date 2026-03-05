@@ -197,7 +197,10 @@ async function callEvotalks(payload, baseUrl, operation) {
   });
 
   const data = await res.json();
-  if (!res.ok) throw new Error(data?.error || data?.message || `HTTP ${res.status}`);
+  if (!res.ok) {
+    const detail = data?.error || data?.message || data?.msg || JSON.stringify(data);
+    throw new Error(`HTTP ${res.status}: ${detail}`);
+  }
   return data;
 }
 
