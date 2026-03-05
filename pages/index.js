@@ -83,25 +83,15 @@ Regras:
 - Arrays com colchetes → "tags", "groups" ou "preferredAgents" conforme contexto
 - Em dúvida, prefira null`;
 
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiApiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0, maxOutputTokens: 1000 },
-      }),
-    }
-  );
+  const res = await fetch("/api/gemini-proxy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt, geminiKey: geminiApiKey }),
+  });
 
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(`Erro API Gemini: ${res.status} — ${err?.error?.message || "verifique sua API Key"}`);
-  }
   const data = await res.json();
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-  return JSON.parse(text.replace(/```json|```/g, "").trim());
+  if (!res.ok) throw new Error(data?.error || `Erro Gemini: ${res.status}`);
+  return JSON.parse(data.text.replace(/```json|```/g, "").trim());
 }
 
 // ─── Call Evotalks via Vercel proxy ───────────────────────────────────────────
