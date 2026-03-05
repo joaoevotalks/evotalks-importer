@@ -1,46 +1,25 @@
-// pages/api/proxy.js
-// Proxy seguro que repassa requisições para o Evotalks, resolvendo o CORS
-
 export default async function handler(req, res) {
-  // Libera CORS para o frontend
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-
-  if (req.method === "OPTIONS") {
-    return res.status(204).end();
-  }
-
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Método não permitido" });
-  }
-
-  const { target, payload } = req.body;
-
-  if (!target) {
-    return res.status(400).json({ error: "Campo 'target' ausente no body" });
-  }
-
-  try {
-    const response = await fetch(target, {
+  if (req.method === "OPTIONS") return res.status(204).end();
+  if (req.method !== "POST") return res.status(405).json({ error: "Método não permitido" });
+  const { type, target, payload, aiPrompt } = req.body;
+  if (type === "ai") {
+    const r = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, messages: [{ role: "user", content: aiPrompt }] }),
     });
-
-    const contentType = response.headers.get("content-type") || "";
-    if (!contentType.includes("application/json")) {
-      const text = await response.text();
-      return res.status(502).json({
-        error: `Servidor Evotalks retornou resposta inválida (${response.status}): ${text.slice(0, 200)}`,
-      });
-    }
-
-    const data = await response.json();
-    return res.status(response.status).json(data);
-  } catch (err) {
-    return res.status(502).json({
-      error: `Erro ao conectar no Evotalks: ${err.message}`,
-    });
+    return res.status(r.status).json(await r.json());
   }
+  if (type === "evotalks") {
+    try {
+      const r = await fetch(target, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      const ct = r.headers.get("content-type") || "";
+      if (!ct.includes("application/json")) { const t = await r.text(); return res.status(502).json({ error: `Resposta inválida (${r.status}): ${t.slice(0,200)}` }); }
+      return res.status(r.status).json(await r.json());
+    } catch (err) { return res.status(502).json({ error: `Erro: ${err.message}` }); }
+  }
+  return res.status(400).json({ error: "Tipo inválido" });
 }
