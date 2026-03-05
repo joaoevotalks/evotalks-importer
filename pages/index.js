@@ -68,13 +68,13 @@ function decodeQP(str) {
 }
 
 function parseVCF(text) {
-  const unfolded = text.replace(/\r\n[ \t]/g, "").replace(/\n[ \t]/g, "");
+  const unfolded = text.replace(/\r\n[ \t]/g, "").replace(/\r[ \t]/g, "").replace(/\n[ \t]/g, "");
   const contacts = [];
   const blocks = unfolded.split(/BEGIN:VCARD/i).slice(1);
   for (const block of blocks) {
     const endIdx = block.search(/END:VCARD/i);
     const body = endIdx >= 0 ? block.slice(0, endIdx) : block;
-    const lines = body.split(/\r?\n/).filter(l => l.trim());
+    const lines = body.split(/\r\n|\r|\n/).filter(l => l.trim());
     const contact = {};
     const phones = [];
     for (const line of lines) {
@@ -83,7 +83,7 @@ function parseVCF(text) {
       const propFull = line.slice(0, colonIdx);
       let value = line.slice(colonIdx + 1);
       if (/ENCODING=QUOTED-PRINTABLE/i.test(propFull)) value = decodeQP(value);
-      const propName = propFull.split(";")[0].replace(/^item\d+\./i, "").toUpperCase();
+      const propName = propFull.split(";")[0].replace(/^item\d+\./i, "").trim().toUpperCase();
       const params   = propFull.toUpperCase();
       if (propName === "FN") {
         contact.name = value.trim();
