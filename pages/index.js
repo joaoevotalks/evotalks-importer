@@ -212,9 +212,7 @@ async function searchEvotalks(baseUrl, config, searchValue) {
     }),
   });
   const data = await res.json();
-  if (res.status === 401) throw new Error(`Autenticação inválida (401): verifique API Key e Queue ID`);
-  if (res.status === 503) throw new Error(`Fila indisponível (503): verifique o Queue ID`);
-  if (!res.ok) return null; // 404 = não encontrado, outros erros → prossegue com add
+  if (!res.ok) return null; // qualquer erro no search → retorna null e prossegue com addContact
   return data?.id ? data : null;
 }
 
