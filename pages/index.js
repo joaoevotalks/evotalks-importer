@@ -298,8 +298,8 @@ export default function Home() {
   const [step, setStep]           = useState(0);
   const [config, setConfig]       = useState(() => {
     try {
-      const saved = typeof window !== "undefined" && localStorage.getItem("evotalks_config");
-      return saved ? JSON.parse(saved) : { apiKey:"", queueId:"", baseUrl:"", geminiKey:"" };
+      const geminiKey = typeof window !== "undefined" ? (localStorage.getItem("evotalks_gemini_key") || "") : "";
+      return { apiKey:"", queueId:"", baseUrl:"", geminiKey };
     } catch { return { apiKey:"", queueId:"", baseUrl:"", geminiKey:"" }; }
   });
   const [operation, setOperation] = useState("");
@@ -321,8 +321,8 @@ export default function Home() {
   const abortRef = useRef(false);
 
   useEffect(() => {
-    try { localStorage.setItem("evotalks_config", JSON.stringify(config)); } catch {}
-  }, [config]);
+    try { if (config.geminiKey) localStorage.setItem("evotalks_gemini_key", config.geminiKey); } catch {}
+  }, [config.geminiKey]);
 
   const handleFile = (file) => {
     if (!file) return;
