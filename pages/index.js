@@ -103,7 +103,7 @@ async function callEvotalks(payload, baseUrl, operation) {
   const res = await fetch("/api/proxy", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ target, payload }),
+    body: JSON.stringify({ type: "evotalks", target, payload }),
   });
 
   const data = await res.json();
