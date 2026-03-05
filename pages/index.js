@@ -163,6 +163,28 @@ Regras:
   return JSON.parse(jsonMatch[0]);
 }
 
+// ─── Phone Normalization ──────────────────────────────────────────────────────
+function normalizePhone(raw) {
+  if (!raw) return "";
+  let d = String(raw).replace(/\D/g, "");
+  if (!d) return "";
+  if (d.startsWith("0")) d = d.slice(1);                         // remove leading 0
+  if (!d.startsWith("55")) d = "55" + d;                         // add Brazil country code
+  if (d.length === 12) d = d.slice(0, 4) + "9" + d.slice(4);    // add 9 prefix: 55DDD + 9 + 8digits
+  return d;
+}
+
+function phoneVariants(normalized) {
+  if (!normalized || normalized.length < 10) return normalized ? [normalized] : [];
+  const v = new Set([normalized]);
+  if (normalized.length === 13 && normalized.startsWith("55")) {
+    v.add(normalized.slice(0, 4) + normalized.slice(5));  // sem 9:         554791598871
+    v.add(normalized.slice(2));                            // sem 55:        47991598871
+    v.add(normalized.slice(2, 4) + normalized.slice(5));  // sem 55 e sem 9: 4791598871
+  }
+  return [...v];
+}
+
 // ─── Call Evotalks via Vercel proxy ───────────────────────────────────────────
 async function callEvotalks(payload, baseUrl, operation) {
   const endpoint = operation === "edit" ? "/int/editContact" : "/int/addContact";
@@ -177,6 +199,21 @@ async function callEvotalks(payload, baseUrl, operation) {
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error || data?.message || `HTTP ${res.status}`);
   return data;
+}
+
+async function searchEvotalks(baseUrl, config, searchValue) {
+  const target = `${baseUrl.replace(/\/$/, "")}/int/searchContact`;
+  const res = await fetch("/api/proxy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      type: "evotalks", target,
+      payload: { queueId: Number(config.queueId) || 0, apiKey: config.apiKey, searchField: "number", searchValue },
+    }),
+  });
+  if (!res.ok) return null;
+  const data = await res.json();
+  return data?.id ? data : null;
 }
 
 // ─── Theme ────────────────────────────────────────────────────────────────────
@@ -358,16 +395,31 @@ export default function Home() {
       setResults(prev => prev.map(r => r.i === i ? { ...r, status:"sending" } : r));
       const payload = rowToPayload(rows[i], finalMapping, config);
 
-      if (operation === "edit" && !payload.id) {
-        setResults(prev => prev.map(r => r.i === i ? { ...r, status:"error", msg:"Campo 'id' ausente" } : r));
-        setProgress(Math.round(((i+1)/rows.length)*100));
-        await new Promise(r => setTimeout(r, 20));
-        continue;
-      }
+      // 1. Normalize phone number
+      if (payload.number) payload.number = normalizePhone(payload.number);
 
       try {
-        const res = await callEvotalks(payload, config.baseUrl, operation);
-        const msg = res?.message || (operation === "edit" ? "Atualizado" : `Criado — ID: ${res?.contactId ?? ""}`);
+        // 2. Search by all phone variants (full, sem-9, sem-55, sem-55-sem-9)
+        let foundContact = null;
+        if (payload.number) {
+          for (const variant of phoneVariants(payload.number)) {
+            foundContact = await searchEvotalks(config.baseUrl, config, variant);
+            if (foundContact) break;
+          }
+        }
+
+        let msg;
+        if (foundContact) {
+          // 3a. Contato encontrado → editContact com ID encontrado
+          const { id: _drop, ...rest } = payload;
+          await callEvotalks({ ...rest, id: foundContact.id }, config.baseUrl, "edit");
+          msg = `Atualizado — ID: ${foundContact.id}`;
+        } else {
+          // 3b. Não encontrado → addContact
+          const res = await callEvotalks(payload, config.baseUrl, "add");
+          msg = res?.message || `Criado — ID: ${res?.contactId ?? ""}`;
+        }
+
         setResults(prev => prev.map(r => r.i === i ? { ...r, status:"success", msg } : r));
       } catch (err) {
         setResults(prev => prev.map(r => r.i === i ? { ...r, status:"error", msg: err.message } : r));
