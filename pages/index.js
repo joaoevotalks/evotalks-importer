@@ -112,6 +112,90 @@ const FIELD_SANITIZERS = {
   free2:       sanitizeText,
 };
 
+// ─── AI Row Cleaning ──────────────────────────────────────────────────────────
+async function aiCleanRows(rows, mapping, geminiKey, onProgress) {
+  const BATCH    = 40;
+  const cleaned  = rows.map(r => ({ ...r }));
+  const invalid  = new Set();
+  const nameCol  = mapping["name"];
+  const phoneCol = mapping["number"];
+
+  for (let i = 0; i < rows.length; i += BATCH) {
+    const slice = rows.slice(i, Math.min(i + BATCH, rows.length));
+    const lines = slice.map((row, j) => {
+      const name  = nameCol  ? String(row[nameCol]  || "").slice(0, 80) : "";
+      const phone = phoneCol ? String(row[phoneCol] || "").slice(0, 30) : "";
+      return `${j}|nome:${JSON.stringify(name)}|tel:${JSON.stringify(phone)}`;
+    }).join("\n");
+
+    const prompt = `Você é especialista em limpeza de dados de contatos. Analise cada linha e retorne os dados formatados.
+
+REGRAS PARA "nome":
+- Válido: nome de pessoa ou empresa reconhecível (pode ter erros ortográficos, números, siglas de empresas)
+- Inválido: apenas símbolos (~, *, ., ,, #), string vazia, ou 1-2 caracteres sem sentido ("~", ".", "Dt", "St", "~*")
+- Se válido: remova símbolos do início e fim, mantenha o conteúdo. Retorne string limpa.
+- Se inválido: retorne null
+
+REGRAS PARA "tel":
+- Extraia apenas dígitos
+- Se não começar com "55": adicione "55" no início
+- Se tiver exatamente 12 dígitos (55+DDD+8dígitos): adicione "9" após o DDD (posição 4)
+- Resultado válido: 12 ou 13 dígitos começando com "55"
+- Se inválido/vazio: retorne null
+
+LINHAS (índice|campo:valor):
+${lines}
+
+Responda SOMENTE com JSON válido, sem markdown:
+{"r":[{"i":0,"nome":"nome limpo ou null","tel":"número formatado ou null"},…]}`;
+
+    try {
+      const res  = await fetch("/api/gemini-proxy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt, geminiKey }),
+      });
+      const data = await res.json();
+      if (data.text) {
+        const raw = data.text.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
+        const hit = raw.match(/\{[\s\S]*\}/);
+        if (hit) {
+          const { r = [] } = JSON.parse(hit[0]);
+          for (const item of r) {
+            const abs = i + item.i;
+            if (abs >= rows.length) continue;
+            const upd = { ...cleaned[abs] };
+            if (nameCol)  upd[nameCol]  = (item.nome === null || item.nome === "null") ? "" : String(item.nome || "").trim();
+            if (phoneCol) upd[phoneCol] = (item.tel  === null || item.tel  === "null") ? "" : String(item.tel  || "").trim();
+            cleaned[abs] = upd;
+            const okName  = nameCol  && String(upd[nameCol]  || "").trim() !== "";
+            const okPhone = phoneCol && String(upd[phoneCol] || "").trim() !== "";
+            if (!okName && !okPhone) invalid.add(abs);
+          }
+        }
+      }
+    } catch {
+      // fallback: deterministic sanitizers
+      slice.forEach((row, j) => {
+        const abs   = i + j;
+        const name  = nameCol  ? sanitizeName(row[nameCol])    : "";
+        const phone = phoneCol ? sanitizePhone(row[phoneCol])  : "";
+        if (!name && !phone) { invalid.add(abs); return; }
+        const upd = { ...cleaned[abs] };
+        if (nameCol)  upd[nameCol]  = name;
+        if (phoneCol) upd[phoneCol] = phone;
+        cleaned[abs] = upd;
+      });
+    }
+
+    onProgress(Math.min(99, Math.round(((i + slice.length) / rows.length) * 100)));
+    await new Promise(r => setTimeout(r, 200));
+  }
+
+  onProgress(100);
+  return { cleaned, invalid };
+}
+
 function rowToPayload(row, mapping, config) {
   const payload = { queueId: Number(config.queueId) || 0, apiKey: config.apiKey };
   for (const f of API_FIELDS) {
@@ -375,7 +459,7 @@ function F({ label, hint, children }) {
   );
 }
 
-const STEPS = ["Configurar","Upload","Mapeamento IA","Revisar","Importar"];
+const STEPS = ["Configurar","Upload","Mapeamento IA","Limpeza IA","Revisar","Importar"];
 
 export default function Home() {
   const [step, setStep]           = useState(0);
@@ -399,6 +483,9 @@ export default function Home() {
   const [progress, setProgress]   = useState(0);
   const [showAll, setShowAll]     = useState(false);
   const [fileType, setFileType]   = useState("");
+  const [invalidRows, setInvalidRows]         = useState(new Set());
+  const [aiCleaning, setAiCleaning]           = useState(false);
+  const [aiCleanProgress, setAiCleanProgress] = useState(0);
   const fileRef  = useRef();
   const abortRef = useRef(false);
 
@@ -424,6 +511,7 @@ export default function Home() {
         setMapping(m);
         setUnrecognized([]);
         setIgnoredCols({});
+        setInvalidRows(new Set());
       };
       reader.readAsText(file, "utf-8");
     } else {
@@ -459,11 +547,29 @@ export default function Home() {
       const init = {};
       (result.unrecognized || []).forEach(c => { init[c] = "ignore"; });
       setIgnoredCols(init);
+      setInvalidRows(new Set());
       setStep(2);
     } catch (e) {
       setAiError("Erro no mapeamento: " + (e?.message || String(e)));
     } finally {
       setAiLoading(false);
+    }
+  };
+
+  const startCleaning = async () => {
+    const fm = buildFinalMapping();
+    setAiCleaning(true);
+    setAiCleanProgress(0);
+    setStep(3);
+    try {
+      const { cleaned, invalid } = await aiCleanRows(rows, fm, config.geminiKey, setAiCleanProgress);
+      setRows(cleaned);
+      setInvalidRows(invalid);
+    } catch (e) {
+      setAiError("Erro na limpeza: " + (e?.message || String(e)));
+    } finally {
+      setAiCleaning(false);
+      setStep(4);
     }
   };
 
@@ -482,6 +588,7 @@ export default function Home() {
 
     for (let i = fromIndex; i < rows.length; i++) {
       if (abortRef.current) break;
+      if (invalidRows.has(i)) { setProgress(Math.round(((i+1)/rows.length)*100)); continue; }
       setResults(prev => prev.map(r => r.i === i ? { ...r, status:"sending" } : r));
       const payload = rowToPayload(rows[i], finalMapping, config);
 
@@ -521,9 +628,13 @@ export default function Home() {
   };
 
   const startImport = () => {
-    setResults(rows.map((_, i) => ({ i, status:"pending", msg:"" })));
+    setResults(rows.map((_, i) => ({
+      i,
+      status: invalidRows.has(i) ? "skipped" : "pending",
+      msg:    invalidRows.has(i) ? "Dados inválidos (ignorado pela IA)" : "",
+    })));
     setProgress(0);
-    setStep(4);
+    setStep(5);
     runImportFrom(0, buildFinalMapping());
   };
 
@@ -538,6 +649,7 @@ export default function Home() {
   const updatedCount = results.filter(r => r.status === "success" && r.action === "updated").length;
   const successCount = addedCount + updatedCount;
   const errorCount   = results.filter(r => r.status === "error").length;
+  const skippedCount = results.filter(r => r.status === "skipped").length;
   const pendingCount = results.filter(r => r.status === "pending" || r.status === "sending").length;
   const canConfig    = config.apiKey && config.queueId && config.baseUrl && config.geminiKey;
   const mappedKeys   = Object.keys(mapping);
@@ -686,7 +798,7 @@ export default function Home() {
                     <button className="hovbtn"
                       style={{ ...s.btn, minWidth:200, background:`linear-gradient(135deg,${C.green},#15803d)`, color:"#fff",
                         opacity: rows.length ? 1 : 0.35, cursor: rows.length ? "pointer" : "not-allowed" }}
-                      disabled={!rows.length} onClick={() => setStep(3)}>
+                      disabled={!rows.length} onClick={() => setStep(4)}>
                       📇 Revisar {rows.length} Contatos →
                     </button>
                   ) : (
@@ -767,45 +879,85 @@ export default function Home() {
                 <div style={s.btnRow}>
                   <button className="hovbtn" style={{ ...s.btn, background:C.surface, color:C.sub, border:`1px solid ${C.border}` }}
                     onClick={() => setStep(1)}>← Voltar</button>
-                  <button className="hovbtn" style={{ ...s.btn, background:C.accent, color:"#fff" }}
-                    onClick={() => setStep(3)}>Revisar Dados →</button>
+                  <button className="hovbtn" style={{ ...s.btn, background:`linear-gradient(135deg,${C.accent},${C.purple})`, color:"#fff" }}
+                    onClick={startCleaning}>✦ Limpar e Revisar →</button>
                 </div>
               </div>
             </div>
           )}
 
-          {/* STEP 3 */}
+          {/* STEP 3 — Limpeza IA */}
           {step === 3 && (
+            <div className="anim">
+              <div style={s.card}>
+                <div style={s.cardTitle}>
+                  <span style={{ animation:"pulse 1.5s infinite" }}>✦ Limpeza Inteligente em andamento...</span>
+                </div>
+                <div style={s.cardDesc}>
+                  A IA está validando e formatando cada contato da planilha — nomes, telefones e campos obrigatórios.
+                </div>
+                <div style={s.pbar}>
+                  <div style={{ ...s.pfill, width:`${aiCleanProgress}%` }} />
+                </div>
+                <div style={{ fontSize:11, color:C.sub, marginTop:8, textAlign:"right" }}>
+                  {aiCleanProgress}% — {Math.min(rows.length, Math.round(rows.length * aiCleanProgress / 100))}/{rows.length} linhas analisadas
+                </div>
+                {aiError && <div style={{ ...s.warnBox, marginTop:16 }}>⚠ {aiError}</div>}
+              </div>
+            </div>
+          )}
+
+          {/* STEP 4 — Revisão */}
+          {step === 4 && (
             <div className="anim">
               <div style={s.card}>
                 <div style={s.cardTitle}>Revisão Final</div>
                 <div style={s.cardDesc}>
-                  {rows.length} contatos · {mappedKeys.length} campos mapeados
+                  <span style={{ color:C.green }}>{rows.length - invalidRows.size} válidos</span>
+                  {invalidRows.size > 0 && <span style={{ color:C.red }}> · {invalidRows.size} ignorados pela IA</span>}
+                  <span style={{ color:C.muted }}> · {mappedKeys.length} campos mapeados</span>
                 </div>
 
-                <div style={{ overflowX:"auto", borderRadius:8, border:`1px solid ${C.border}`, marginBottom:16, maxHeight:320, overflowY:"auto" }}>
+                {invalidRows.size > 0 && (
+                  <div style={s.warnBox}>
+                    ⚠ {invalidRows.size} linha{invalidRows.size !== 1 ? "s" : ""} sem nome nem telefone válido — serão ignoradas na importação.
+                  </div>
+                )}
+
+                <div style={{ overflowX:"auto", borderRadius:8, border:`1px solid ${C.border}`, marginBottom:16, maxHeight:340, overflowY:"auto" }}>
                   <table style={s.table}>
                     <thead>
-                      <tr>{previewCols.map(k => (
-                        <th key={k} style={s.th}>{mapping[k]}<br/><span style={{ color:C.accent, fontWeight:400 }}>→ {k}</span></th>
-                      ))}</tr>
+                      <tr>
+                        <th style={s.th}>Status</th>
+                        {previewCols.map(k => (
+                          <th key={k} style={s.th}>{mapping[k]}<br/><span style={{ color:C.accent, fontWeight:400 }}>→ {k}</span></th>
+                        ))}
+                      </tr>
                     </thead>
                     <tbody>
-                      {(showAll ? rows : rows.slice(0,8)).map((row, ri) => (
-                        <tr key={ri}>
-                          {previewCols.map(k => (
-                            <td key={k} style={s.td} title={String(row[mapping[k]] ?? "")}>
-                              {row[mapping[k]] !== "" && row[mapping[k]] !== undefined
-                                ? String(row[mapping[k]]) : <span style={{ color:C.muted }}>—</span>}
+                      {(showAll ? rows : rows.slice(0, 10)).map((row, ri) => {
+                        const isInvalid = invalidRows.has(ri);
+                        return (
+                          <tr key={ri} style={{ opacity: isInvalid ? 0.4 : 1 }}>
+                            <td style={{ ...s.td, whiteSpace:"nowrap" }}>
+                              {isInvalid
+                                ? <span style={{ color:C.red, fontWeight:700, fontSize:10 }}>✗ IGNORADO</span>
+                                : <span style={{ color:C.green, fontWeight:700, fontSize:10 }}>✓ OK</span>}
                             </td>
-                          ))}
-                        </tr>
-                      ))}
+                            {previewCols.map(k => (
+                              <td key={k} style={s.td} title={String(row[mapping[k]] ?? "")}>
+                                {row[mapping[k]] !== "" && row[mapping[k]] !== undefined
+                                  ? String(row[mapping[k]]) : <span style={{ color:C.muted }}>—</span>}
+                              </td>
+                            ))}
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
 
-                {rows.length > 8 && (
+                {rows.length > 10 && (
                   <div style={{ textAlign:"center", marginBottom:14 }}>
                     <button className="hovbtn" style={{ ...s.btn, background:C.surface, color:C.sub, border:`1px solid ${C.border}`, fontSize:11, padding:"6px 14px" }}
                       onClick={() => setShowAll(v => !v)}>
@@ -816,22 +968,22 @@ export default function Home() {
 
                 <div style={s.btnRow}>
                   <button className="hovbtn" style={{ ...s.btn, background:C.surface, color:C.sub, border:`1px solid ${C.border}` }}
-                    onClick={() => setStep(2)}>← Ajustar</button>
+                    onClick={() => setStep(2)}>← Ajustar Mapeamento</button>
                   <button className="hovbtn" style={{ ...s.btn, color:"#fff",
                     background:`linear-gradient(135deg,${C.green},#15803d)` }}
                     onClick={startImport}>
-                    ✦ Iniciar Importação
+                    ✦ Importar {rows.length - invalidRows.size} Contatos
                   </button>
                 </div>
               </div>
             </div>
           )}
 
-          {/* STEP 4 */}
-          {step === 4 && (
+          {/* STEP 5 — Importar */}
+          {step === 5 && (
             <div className="anim">
               <div style={{ display:"flex", gap:12, marginBottom:18 }}>
-                {[[addedCount,C.green,"Adicionados"],[updatedCount,C.accent,"Editados"],[errorCount,C.red,"Erros"],[pendingCount,C.amber,"Pendente"],[rows.length,C.sub,"Total"]].map(([n,c,l]) => (
+                {[[addedCount,C.green,"Adicionados"],[updatedCount,C.accent,"Editados"],[errorCount,C.red,"Erros"],[skippedCount,C.muted,"Ignorados"],[pendingCount,C.amber,"Pendente"],[rows.length,C.sub,"Total"]].map(([n,c,l]) => (
                   <div key={l} style={s.stat}>
                     <div style={{ ...s.statN, color:c }}>{n}</div>
                     <div style={s.statL}>{l}</div>
@@ -875,6 +1027,7 @@ export default function Home() {
                           pending:  { col:C.muted,  icon:"·",  label:"AGUARDANDO" },
                           sending:  { col:C.amber,  icon:"⟳",  label:"BUSCANDO..."  },
                           error:    { col:C.red,    icon:"✗",  label:"ERRO"        },
+                          skipped:  { col:C.muted,  icon:"⊘",  label:"IGNORADO"    },
                           success:  r.action === "updated"
                             ? { col:C.accent, icon:"✎", label:"EDITADO"     }
                             : { col:C.green,  icon:"✦", label:"ADICIONADO"  },
@@ -904,7 +1057,7 @@ export default function Home() {
                 {!importing && (
                   <div style={s.btnRow}>
                     <button className="hovbtn" style={{ ...s.btn, background:C.surface, color:C.sub, border:`1px solid ${C.border}` }}
-                      onClick={() => { if (progress === 100) { setStep(0); setRows([]); setHeaders([]); setMapping({}); setFileName(""); setResults([]); setProgress(0); setUnrecognized([]); setIgnoredCols({}); setFileType(""); } else { setStep(3); } }}>
+                      onClick={() => { if (progress === 100) { setStep(0); setRows([]); setHeaders([]); setMapping({}); setFileName(""); setResults([]); setProgress(0); setUnrecognized([]); setIgnoredCols({}); setFileType(""); setInvalidRows(new Set()); } else { setStep(4); } }}>
                       {progress === 100 ? "← Nova Importação" : "← Voltar"}
                     </button>
                     {results.some(r => r.status === "pending") && (
