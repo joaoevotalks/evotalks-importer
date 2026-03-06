@@ -60,10 +60,23 @@ function sanitizePhone(val) {
   if (!val) return "";
   let d = String(val).replace(/\D/g, "");
   if (!d) return "";
-  if (d.startsWith("0")) d = d.slice(1);
+  // Remove leading zeros
+  d = d.replace(/^0+/, "") || "";
+  if (!d) return "";
+  // Remove spurious leading "1" present in some export artifacts (e.g. 14+ digit numbers)
+  if (d.length > 13 && d.startsWith("1")) d = d.slice(1);
+  // Add Brazil country code if missing
   if (!d.startsWith("55")) d = "55" + d;
-  if (d.length === 12) d = d.slice(0, 4) + "9" + d.slice(4);
-  return d.length >= 12 ? d : "";
+  // prefix = "55" + DDD (4 chars), local = digits after that
+  const prefix = d.slice(0, 4);
+  const local  = d.slice(4);
+  // Add "9" ONLY for old mobile format: exactly 8 local digits starting with 6, 7 or 8
+  // Fixed lines (start with 2-5) and numbers already with 9 are left untouched
+  if (local.length === 8 && /^[6-8]/.test(local)) {
+    d = prefix + "9" + local;
+  }
+  // Valid: 12 digits (fixed: 55+DDD+8) or 13 digits (mobile: 55+DDD+9+8)
+  return (d.length === 12 || d.length === 13) ? d : "";
 }
 
 function sanitizeSocialHandle(val) {
@@ -137,11 +150,16 @@ REGRAS PARA "nome":
 - Se inválido: retorne null
 
 REGRAS PARA "tel":
-- Extraia apenas dígitos
+- Extraia apenas dígitos e remova zeros à esquerda
+- Se tiver mais de 13 dígitos e começar com "1": remova o "1" inicial (artefato de exportação)
 - Se não começar com "55": adicione "55" no início
-- Se tiver exatamente 12 dígitos (55+DDD+8dígitos): adicione "9" após o DDD (posição 4)
-- Resultado válido: 12 ou 13 dígitos começando com "55"
-- Se inválido/vazio: retorne null
+- Analise os dígitos locais (tudo após os 4 primeiros: "55"+DDD):
+  * 8 dígitos começando com 6, 7 ou 8 → celular antigo sem o 9, adicione "9" após o DDD
+  * 8 dígitos começando com 2, 3, 4 ou 5 → fixo, NÃO adicione "9"
+  * 8 dígitos começando com 9 → pode ser fixo, NÃO adicione "9"
+  * 9 dígitos começando com 9 → celular moderno correto, NÃO adicione "9"
+- Resultado válido: exatamente 12 dígitos (fixo) ou 13 dígitos (celular), sempre começando com "55"
+- Se inválido/vazio ou comprimento incorreto: retorne null
 
 LINHAS (índice|campo:valor):
 ${lines}
@@ -331,13 +349,8 @@ Regras:
 
 // ─── Phone Normalization ──────────────────────────────────────────────────────
 function normalizePhone(raw) {
-  if (!raw) return "";
-  let d = String(raw).replace(/\D/g, "");
-  if (!d) return "";
-  if (d.startsWith("0")) d = d.slice(1);                         // remove leading 0
-  if (!d.startsWith("55")) d = "55" + d;                         // add Brazil country code
-  if (d.length === 12) d = d.slice(0, 4) + "9" + d.slice(4);    // add 9 prefix: 55DDD + 9 + 8digits
-  return d;
+  // Kept for phoneVariants compatibility — delegates to sanitizePhone
+  return sanitizePhone(raw);
 }
 
 function phoneVariants(normalized) {
