@@ -486,6 +486,7 @@ export default function Home() {
   const [invalidRows, setInvalidRows]         = useState(new Set());
   const [aiCleaning, setAiCleaning]           = useState(false);
   const [aiCleanProgress, setAiCleanProgress] = useState(0);
+  const [useCleaning, setUseCleaning]         = useState(true);
   const fileRef  = useRef();
   const abortRef = useRef(false);
 
@@ -876,11 +877,33 @@ export default function Home() {
                   </>
                 )}
 
+                <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:16,
+                  padding:"10px 14px", background:C.surface, borderRadius:8, border:`1px solid ${C.border}`, cursor:"pointer" }}
+                  onClick={() => setUseCleaning(v => !v)}>
+                  <div style={{ width:32, height:18, borderRadius:9, background: useCleaning ? C.accent : C.muted,
+                    position:"relative", transition:"background 0.2s", flexShrink:0 }}>
+                    <div style={{ position:"absolute", top:2, left: useCleaning ? 16 : 2, width:14, height:14,
+                      borderRadius:"50%", background:"#fff", transition:"left 0.2s" }} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize:11, fontWeight:600, color: useCleaning ? C.text : C.sub }}>
+                      Limpeza Inteligente por IA
+                    </div>
+                    <div style={{ fontSize:10, color:C.muted, marginTop:1 }}>
+                      {useCleaning
+                        ? "A IA validará e formatará cada contato antes de importar"
+                        : "Pulará a limpeza — dados serão importados como estão (sanitização básica)"}
+                    </div>
+                  </div>
+                </div>
+
                 <div style={s.btnRow}>
                   <button className="hovbtn" style={{ ...s.btn, background:C.surface, color:C.sub, border:`1px solid ${C.border}` }}
                     onClick={() => setStep(1)}>← Voltar</button>
-                  <button className="hovbtn" style={{ ...s.btn, background:`linear-gradient(135deg,${C.accent},${C.purple})`, color:"#fff" }}
-                    onClick={startCleaning}>✦ Limpar e Revisar →</button>
+                  <button className="hovbtn" style={{ ...s.btn, background: useCleaning ? `linear-gradient(135deg,${C.accent},${C.purple})` : C.accent, color:"#fff" }}
+                    onClick={useCleaning ? startCleaning : () => setStep(4)}>
+                    {useCleaning ? "✦ Limpar e Revisar →" : "Revisar Dados →"}
+                  </button>
                 </div>
               </div>
             </div>
