@@ -70,9 +70,10 @@ function sanitizePhone(val) {
   // prefix = "55" + DDD (4 chars), local = digits after that
   const prefix = d.slice(0, 4);
   const local  = d.slice(4);
-  // Add "9" ONLY for old mobile format: exactly 8 local digits starting with 6, 7 or 8
-  // Fixed lines (start with 2-5) and numbers already with 9 are left untouched
-  if (local.length === 8 && /^[6-8]/.test(local)) {
+  // Add "9" for old mobile format: exactly 8 local digits starting with 6, 7, 8 or 9
+  // These are pre-2012 Brazilian mobiles that need the mandatory 9 prefix
+  // Fixed lines start with 2–5 and are left untouched
+  if (local.length === 8 && /^[6-9]/.test(local)) {
     d = prefix + "9" + local;
   }
   // Valid: 12 digits (fixed: 55+DDD+8) or 13 digits (mobile: 55+DDD+9+8)
@@ -154,9 +155,8 @@ REGRAS PARA "tel":
 - Se tiver mais de 13 dígitos e começar com "1": remova o "1" inicial (artefato de exportação)
 - Se não começar com "55": adicione "55" no início
 - Analise os dígitos locais (tudo após os 4 primeiros: "55"+DDD):
-  * 8 dígitos começando com 6, 7 ou 8 → celular antigo sem o 9, adicione "9" após o DDD
+  * 8 dígitos começando com 6, 7, 8 ou 9 → celular antigo (pré-2012) sem o 9, adicione "9" após o DDD
   * 8 dígitos começando com 2, 3, 4 ou 5 → fixo, NÃO adicione "9"
-  * 8 dígitos começando com 9 → pode ser fixo, NÃO adicione "9"
   * 9 dígitos começando com 9 → celular moderno correto, NÃO adicione "9"
 - Resultado válido: exatamente 12 dígitos (fixo) ou 13 dígitos (celular), sempre começando com "55"
 - Se inválido/vazio ou comprimento incorreto: retorne null
