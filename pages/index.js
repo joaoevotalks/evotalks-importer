@@ -38,16 +38,96 @@ function parseArrayField(val) {
   return parts.length > 0 ? parts : undefined;
 }
 
+// ─── Field Sanitizers ─────────────────────────────────────────────────────────
+function sanitizeName(val) {
+  if (!val) return "";
+  // Strip leading/trailing non-letter chars (tildes, dots, commas, asterisks, etc.)
+  const cleaned = String(val)
+    .replace(/^[^\p{L}]+/u, "")
+    .replace(/[^\p{L}\s'\-\.]+$/u, "")
+    .trim();
+  const letters = [...cleaned].filter(c => /\p{L}/u.test(c));
+  return letters.length >= 2 ? cleaned : "";
+}
+
+function sanitizeEmail(val) {
+  if (!val) return "";
+  const cleaned = String(val).trim().toLowerCase();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(cleaned) ? cleaned : "";
+}
+
+function sanitizePhone(val) {
+  if (!val) return "";
+  let d = String(val).replace(/\D/g, "");
+  if (!d) return "";
+  if (d.startsWith("0")) d = d.slice(1);
+  if (!d.startsWith("55")) d = "55" + d;
+  if (d.length === 12) d = d.slice(0, 4) + "9" + d.slice(4);
+  return d.length >= 12 ? d : "";
+}
+
+function sanitizeSocialHandle(val) {
+  if (!val) return "";
+  let h = String(val).trim();
+  // Remove full URL (instagram, facebook, etc.)
+  h = h.replace(/^https?:\/\/(www\.)?(instagram|facebook)\.com\//i, "");
+  // Remove @ prefix and trailing slashes/spaces
+  h = h.replace(/^@/, "").replace(/\/+$/, "").trim();
+  return h;
+}
+
+function sanitizeDocument(val) {
+  if (!val) return "";
+  const digits = String(val).replace(/\D/g, "");
+  // CPF = 11 digits, CNPJ = 14 digits
+  return (digits.length === 11 || digits.length === 14) ? digits : "";
+}
+
+function sanitizePostalCode(val) {
+  if (!val) return "";
+  return String(val).replace(/\D/g, "");
+}
+
+function sanitizeText(val) {
+  if (val === undefined || val === null) return "";
+  return String(val).trim();
+}
+
+const FIELD_SANITIZERS = {
+  name:        sanitizeName,
+  number:      sanitizePhone,
+  email:       sanitizeEmail,
+  instagram:   sanitizeSocialHandle,
+  facebook:    sanitizeSocialHandle,
+  document:    sanitizeDocument,
+  postalCode:  sanitizePostalCode,
+  address:     sanitizeText,
+  houseNumber: sanitizeText,
+  addressComp: sanitizeText,
+  neighborhood:sanitizeText,
+  city:        sanitizeText,
+  state:       sanitizeText,
+  country:     sanitizeText,
+  free1:       sanitizeText,
+  free2:       sanitizeText,
+};
+
 function rowToPayload(row, mapping, config) {
   const payload = { queueId: Number(config.queueId) || 0, apiKey: config.apiKey };
   for (const f of API_FIELDS) {
     const col = mapping[f.key];
     if (!col || row[col] === undefined || String(row[col]).trim() === "") continue;
     const raw = row[col];
-    if (f.key === "id")      { payload.id = Number(raw); continue; }
+    if (f.key === "id") {
+      const n = Number(raw);
+      if (n > 0) payload.id = n;
+      continue;
+    }
     if (f.type === "array")  { const a = parseArrayField(raw); if (a) payload[f.key] = a; continue; }
     if (f.type === "number") { payload[f.key] = Number(raw) || 0; continue; }
-    payload[f.key] = String(raw);
+    const sanitizer = FIELD_SANITIZERS[f.key] || sanitizeText;
+    const value = sanitizer(raw);
+    if (value !== "") payload[f.key] = value;
   }
   return payload;
 }
@@ -143,9 +223,11 @@ Retorne SOMENTE JSON válido sem markdown neste formato exato:
 
 Regras:
 - null (não string) para colunas sem correspondência
-- IDs numéricos de contato → "id"
+- "id" SOMENTE se o valor for um número inteiro puro (ex: 12345). UUIDs (formato xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx) ou qualquer string com letras/hífens → null
+- Datas, timestamps, ou campos de data de cadastro → null (não existe campo de data na API)
 - Telefones → "number"
-- Arrays com colchetes → "tags", "groups" ou "preferredAgents" conforme contexto
+- "tags", "groups" ou "preferredAgents" SOMENTE se os valores forem arrays numéricos no formato [1,2,3]. Etiquetas ou tags como texto simples (ex: "cliente", "vip") → null
+- Arrays com colchetes e números → "tags", "groups" ou "preferredAgents" conforme o nome da coluna
 - Em dúvida, prefira null`;
 
   const res = await fetch("/api/gemini-proxy", {
@@ -403,11 +485,8 @@ export default function Home() {
       setResults(prev => prev.map(r => r.i === i ? { ...r, status:"sending" } : r));
       const payload = rowToPayload(rows[i], finalMapping, config);
 
-      // 1. Normalize phone number
-      if (payload.number) payload.number = normalizePhone(payload.number);
-
       try {
-        // 2. Search by all phone variants (full, sem-9, sem-55, sem-55-sem-9)
+        // 1. Search by all phone variants (full, sem-9, sem-55, sem-55-sem-9)
         let foundContact = null;
         if (payload.number) {
           for (const variant of phoneVariants(payload.number)) {
