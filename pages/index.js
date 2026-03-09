@@ -500,8 +500,9 @@ export default function Home() {
   const [aiCleaning, setAiCleaning]           = useState(false);
   const [aiCleanProgress, setAiCleanProgress] = useState(0);
   const [useCleaning, setUseCleaning]         = useState(true);
-  const fileRef  = useRef();
-  const abortRef = useRef(false);
+  const fileRef      = useRef();
+  const abortRef     = useRef(false);
+  const resultsRef   = useRef([]);
 
   useEffect(() => {
     try { if (config.geminiKey) localStorage.setItem("evotalks_gemini_key", config.geminiKey); } catch {}
@@ -600,63 +601,101 @@ export default function Home() {
     abortRef.current = false;
     setImporting(true);
 
-    for (let i = fromIndex; i < rows.length; i++) {
-      if (abortRef.current) break;
-      if (invalidRows.has(i)) { setProgress(Math.round(((i+1)/rows.length)*100)); continue; }
-      setResults(prev => prev.map(r => r.i === i ? { ...r, status:"sending" } : r));
-      const payload = rowToPayload(rows[i], finalMapping, config);
+    const WORKERS    = 5;
+    const BATCH_SIZE = 20;
+    const total      = rows.length;
+    let cursor       = fromIndex;
+    let doneSoFar    = 0;
 
-      try {
-        // 1. Search by all phone variants (full, sem-9, sem-55, sem-55-sem-9)
-        let foundContact = null;
-        if (payload.number) {
-          for (const variant of phoneVariants(payload.number)) {
-            foundContact = await searchEvotalks(config.baseUrl, config, variant);
-            if (foundContact) break;
+    const worker = async () => {
+      while (!abortRef.current) {
+        const i = cursor++;
+        if (i >= total) break;
+
+        // Skip already-finished or invalid rows instantly
+        const cur = resultsRef.current[i];
+        if (cur?.status === "success" || cur?.status === "skipped") {
+          doneSoFar++;
+          continue;
+        }
+        if (invalidRows.has(i)) {
+          doneSoFar++;
+          continue;
+        }
+
+        // Mark as sending (written to ref; UI picks it up on next batch flush)
+        resultsRef.current[i] = { ...resultsRef.current[i], status: "sending" };
+
+        const payload = rowToPayload(rows[i], finalMapping, config);
+        try {
+          // Search by all phone variants (full, sem-9, sem-55, sem-55-sem-9)
+          let foundContact = null;
+          if (payload.number) {
+            for (const variant of phoneVariants(payload.number)) {
+              foundContact = await searchEvotalks(config.baseUrl, config, variant);
+              if (foundContact) break;
+            }
           }
+
+          let action, msg;
+          if (foundContact) {
+            // Contato encontrado → editContact com ID encontrado
+            const { id: _drop, ...rest } = payload;
+            await callEvotalks({ ...rest, id: foundContact.id }, config.baseUrl, "edit");
+            action = "updated";
+            msg = `ID: ${foundContact.id}`;
+          } else {
+            // Não encontrado → addContact
+            const res = await callEvotalks(payload, config.baseUrl, "add");
+            action = "added";
+            msg = res?.contactId ? `ID: ${res.contactId}` : (res?.message || "");
+          }
+          resultsRef.current[i] = { ...resultsRef.current[i], status: "success", action, msg };
+        } catch (err) {
+          resultsRef.current[i] = { ...resultsRef.current[i], status: "error", msg: err.message };
         }
 
-        let action, msg;
-        if (foundContact) {
-          // 3a. Contato encontrado → editContact com ID encontrado
-          const { id: _drop, ...rest } = payload;
-          await callEvotalks({ ...rest, id: foundContact.id }, config.baseUrl, "edit");
-          action = "updated";
-          msg = `ID: ${foundContact.id}`;
-        } else {
-          // 3b. Não encontrado → addContact
-          const res = await callEvotalks(payload, config.baseUrl, "add");
-          action = "added";
-          msg = res?.contactId ? `ID: ${res.contactId}` : (res?.message || "");
+        doneSoFar++;
+        // Flush UI every BATCH_SIZE completions to avoid O(n²) re-renders
+        if (doneSoFar % BATCH_SIZE === 0) {
+          setResults([...resultsRef.current]);
+          setProgress(Math.round((doneSoFar / total) * 100));
         }
-
-        setResults(prev => prev.map(r => r.i === i ? { ...r, status:"success", action, msg } : r));
-      } catch (err) {
-        setResults(prev => prev.map(r => r.i === i ? { ...r, status:"error", msg: err.message } : r));
       }
+    };
 
-      setProgress(Math.round(((i+1)/rows.length)*100));
-      await new Promise(r => setTimeout(r, 150));
-    }
+    // Launch all workers concurrently and wait for all to finish
+    await Promise.all(Array.from({ length: WORKERS }, () => worker()));
+
+    // Final flush — ensure last batch and 100% progress are reflected
+    setResults([...resultsRef.current]);
+    setProgress(100);
     setImporting(false);
   };
 
   const startImport = () => {
-    setResults(rows.map((_, i) => ({
+    const initial = rows.map((_, i) => ({
       i,
       status: invalidRows.has(i) ? "skipped" : "pending",
       msg:    invalidRows.has(i) ? "Dados inválidos (ignorado pela IA)" : "",
-    })));
+    }));
+    resultsRef.current = initial;
+    setResults(initial);
     setProgress(0);
     setStep(5);
     runImportFrom(0, buildFinalMapping());
   };
 
   const resumeImport = () => {
-    const firstPending = results.findIndex(r => r.status === "pending" || r.status === "sending");
-    if (firstPending < 0) return;
-    setResults(prev => prev.map(r => r.status === "sending" ? { ...r, status:"pending" } : r));
-    runImportFrom(firstPending, buildFinalMapping());
+    const hasPending = results.some(r => r.status === "pending" || r.status === "sending");
+    if (!hasPending) return;
+    // Reset any "sending" rows (from aborted parallel workers) back to "pending"
+    const updated = results.map(r => r.status === "sending" ? { ...r, status: "pending" } : r);
+    resultsRef.current = updated;
+    setResults(updated);
+    // Start cursor from the first pending row (workers skip already-finished ones)
+    const firstPending = updated.findIndex(r => r.status === "pending");
+    runImportFrom(firstPending >= 0 ? firstPending : 0, buildFinalMapping());
   };
 
   const addedCount   = results.filter(r => r.status === "success" && r.action === "added").length;
